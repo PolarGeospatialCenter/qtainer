@@ -1,0 +1,66 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  namespace: testing
+  name: qtainer
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: qtainer
+  namespace: testing
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: qtainer # Automatically created system role.
+subjects:
+- kind: ServiceAccount
+  name: qtainer
+  namespace: testing
+---
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  name: qtainer
+  namespace: testing
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+---
+apiVersion: v1
+kind: Deployment
+metadata:
+  name: hello-world
+  # Note that the Pod does not need to be in the same namespace as the loader.
+  labels:
+    app: hello
+spec:
+  selector:
+    matchLabels:
+      app: hello
+  template:
+    metadata:
+      labels:
+        app: hello
+    spec:
+      initContainers:
+        - name: quorumWait
+          image: pgc-docker.artifactory.umn.edu/qtainer:latest
+          command:
+            - /bin/qtainer
+            - -l
+            - app=hello
+            - -w
+            - "3"
+            - -n
+            - testing
+      containers:
+      - name: hello
+        image: crccheck/hello-world
+        ports:
+        - containerPort: 8000
