@@ -2,7 +2,10 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
+	"net/http"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -10,25 +13,52 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-type podStatusMap map[string]corev1.PodStatus
+type podStatusMap map[string]bool
 
-func (pods podStatusMap) initializing() int {
+func (pods podStatusMap) online() int {
 	var count int
-	for _, pod := range pods {
-		for _, icStatus := range pod.InitContainerStatuses {
-			if icStatus.State.Running != nil {
-				count++
-				break
-			}
+	for _, podOnline := range pods {
+		if podOnline {
+			count++
 		}
 	}
 	return count
 }
 
+func canConnect(pod *corev1.Pod, timeout time.Duration, port *int) bool {
+	ip := pod.Status.PodIP
+
+	client := http.Client{Timeout: timeout}
+	res, err := client.Get(fmt.Sprintf("http://%s:%d", ip, port))
+
+	if err != nil {
+		log.Printf("Error getting %s status: %v", ip, err)
+	}
+
+	if res.StatusCode == http.StatusOK {
+		return true
+	}
+
+	return false
+}
+
+func discoveryHandler(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusOK)
+}
+
 func main() {
 	var namespace = flag.String("n", "default", "Kubernetes Namespace")
+	var port = flag.Int("p", 10100, "Discovery Server Port")
 	var labelSelector = flag.String("l", "", "Label Selector")
 	var waitFor = flag.Int("w", 3, "Wait for this many pods")
+
+	http.HandleFunc("/", discoveryHandler)
+	go func() {
+		err := http.ListenAndServe(fmt.Sprintf(":%d", port), nil)
+		if err != nil {
+			log.Fatalf("Unable to start http discovery server: %v", err)
+		}
+	}()
 
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
@@ -52,7 +82,7 @@ func main() {
 	}
 
 	for _, pod := range podList.Items {
-		pods[pod.Name] = pod.Status
+		pods[pod.Name] = false
 	}
 
 	opts.Watch = true
@@ -62,7 +92,7 @@ func main() {
 		log.Fatalf("Error watching pods: %v", err)
 	}
 
-	for pods.initializing() < *waitFor {
+	for pods.online() < *waitFor {
 		log.Printf("Waiting for pod updates...")
 		select {
 		case event := <-podWatch.ResultChan():
@@ -80,12 +110,12 @@ func main() {
 			case "Added":
 				fallthrough
 			case "Modified":
-				pods[pod.Name] = pod.Status
+				pods[pod.Name] = canConnect(pod, time.Second, port)
 			case "Deleted":
 				delete(pods, pod.Name)
 			}
 		}
 	}
 
-	log.Printf("%d pods in inializing state, exiting.", pods.initializing())
+	log.Printf("%d pods in inializing state, exiting.", pods.online())
 }
