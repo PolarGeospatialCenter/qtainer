@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -25,7 +26,7 @@ func (pods podStatusMap) online() int {
 	return count
 }
 
-func canConnect(pod *corev1.Pod, timeout time.Duration, port *int) bool {
+func canConnect(pod corev1.Pod, timeout time.Duration, port int) bool {
 	ip := pod.Status.PodIP
 
 	client := http.Client{Timeout: timeout}
@@ -33,6 +34,7 @@ func canConnect(pod *corev1.Pod, timeout time.Duration, port *int) bool {
 
 	if err != nil {
 		log.Printf("Error getting %s status: %v", ip, err)
+		return false
 	}
 
 	if res.StatusCode == http.StatusOK {
@@ -51,10 +53,13 @@ func main() {
 	var port = flag.Int("p", 10100, "Discovery Server Port")
 	var labelSelector = flag.String("l", "", "Label Selector")
 	var waitFor = flag.Int("w", 3, "Wait for this many pods")
+	var timeout = flag.String("t", "10s", "Max time to wait for online pods")
+
+	flag.Parse()
 
 	http.HandleFunc("/", discoveryHandler)
 	go func() {
-		err := http.ListenAndServe(fmt.Sprintf(":%d", port), nil)
+		err := http.ListenAndServe(fmt.Sprintf(":%d", *port), nil)
 		if err != nil {
 			log.Fatalf("Unable to start http discovery server: %v", err)
 		}
@@ -74,48 +79,35 @@ func main() {
 		opts.LabelSelector = *labelSelector
 	}
 
-	pods := podStatusMap{}
-
-	podList, err := kubeClient.CoreV1().Pods(*namespace).List(opts)
+	timeoutDuration, err := time.ParseDuration(*timeout)
 	if err != nil {
-		log.Fatalf("Error getting pods: %v", err)
+		log.Fatalf("Unable to parse timeout '%s': %v", *timeout, err)
 	}
+	timeoutTimer := time.NewTimer(timeoutDuration)
+	ticker := time.NewTicker(time.Second)
 
-	for _, pod := range podList.Items {
-		pods[pod.Name] = false
-	}
-
-	opts.Watch = true
-	opts.ResourceVersion = podList.ResourceVersion
-	podWatch, err := kubeClient.CoreV1().Pods(*namespace).Watch(opts)
-	if err != nil {
-		log.Fatalf("Error watching pods: %v", err)
-	}
-
-	for pods.online() < *waitFor {
-		log.Printf("Waiting for pod updates...")
+	for {
 		select {
-		case event := <-podWatch.ResultChan():
-			if event.Type == "Error" {
-				log.Fatalf("Got error from watch: %v", event.Object)
+
+		case <-ticker.C:
+			pods := podStatusMap{}
+			podList, err := kubeClient.CoreV1().Pods(*namespace).List(opts)
+			if err != nil {
+				log.Fatalf("Error getting pods: %v", err)
 			}
 
-			pod, ok := event.Object.(*corev1.Pod)
-			if !ok {
-				log.Printf("Got object of unexpected type from watch %T", event.Object)
-				continue
+			for _, pod := range podList.Items {
+				pods[pod.Name] = canConnect(pod, time.Second, *port)
 			}
 
-			switch event.Type {
-			case "Added":
-				fallthrough
-			case "Modified":
-				pods[pod.Name] = canConnect(pod, time.Second, port)
-			case "Deleted":
-				delete(pods, pod.Name)
+			if pods.online() >= *waitFor {
+				log.Printf("%d pods in inializing state, exiting.", pods.online())
+				time.Sleep(time.Second * 5)
+				os.Exit(0)
 			}
+
+		case <-timeoutTimer.C:
+			log.Fatalf("Timed out waiting for online containers")
 		}
 	}
-
-	log.Printf("%d pods in inializing state, exiting.", pods.online())
 }
