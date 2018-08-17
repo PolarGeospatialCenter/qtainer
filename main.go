@@ -4,8 +4,10 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -30,7 +32,7 @@ func canConnect(pod corev1.Pod, timeout time.Duration, port int) bool {
 	ip := pod.Status.PodIP
 
 	client := http.Client{Timeout: timeout}
-	res, err := client.Get(fmt.Sprintf("http://%s:%d", ip, port))
+	res, err := client.Get(fmt.Sprintf("http://%s", net.JoinHostPort(ip, strconv.Itoa(port))))
 
 	if err != nil {
 		log.Printf("Error getting %s status: %v", ip, err)

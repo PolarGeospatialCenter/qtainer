@@ -1,12 +1,12 @@
-FROM golang:alpine
+FROM golang:stretch
 
 WORKDIR /go/src/github.com/PolarGeospatialCenter/pgcboot
 COPY main.go ./main.go
 COPY Gopkg.toml Gopkg.lock ./
 
-RUN apk add --no-cache git make curl
+RUN apt-get install -y git make curl
 RUN curl https://raw.githubusercontent.com/golang/dep/master/install.sh | sh
-RUN dep ensure
+RUN dep ensure -v -vendor-only
 RUN go build -o /bin/qtainer .
 
 FROM scratch
