@@ -50,7 +50,7 @@ spec:
     spec:
       initContainers:
         - name: quorumWait
-          image: pgc-docker.artifactory.umn.edu/qtainer:latest
+          image: polargeospatialcenter/qtainer:latest
           command:
             - /bin/qtainer
             - -l
